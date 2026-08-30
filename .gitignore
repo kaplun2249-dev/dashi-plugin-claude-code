@@ -13,3 +13,9 @@ secrets/
 bun.lockb.bak
 coverage/
 .bun/
+
+# Данные кабинетов (свои и клиентские) в репозиторий не попадают.
+# В git — только пустой шаблон examples/nomado-workspace/core/accounts/_template/
+examples/nomado-workspace/core/accounts/*
+!examples/nomado-workspace/core/accounts/_template/
+!examples/nomado-workspace/core/accounts/README.md
