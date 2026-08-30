@@ -12,16 +12,19 @@
 #
 set -euo pipefail
 
-AGENT="nomado-market"
+ROLE="market"
+AGENT=""
 LAB_ROOT="${HOME}/.claude-lab"
 FORCE=0
 DRY_RUN=0
 
 usage() {
   cat <<'USAGE'
-nomado-workspace-init.sh — развернуть workspace агента маркетплейсов
+nomado-workspace-init.sh — развернуть workspace агента Номадо
 
-  --agent NAME       имя агента (по умолчанию: nomado-market)
+  --role ROLE        market  — экономика, цены, сводки (по умолчанию)
+                     content — визуал, карточки, отзывы и вопросы
+  --agent NAME       имя агента (по умолчанию: nomado-<role>)
   --lab-root PATH    корень лаборатории (по умолчанию: ~/.claude-lab)
   --force            перезаписать существующие файлы шаблона
   --dry-run          показать, что было бы сделано, ничего не менять
@@ -31,6 +34,7 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --role)     ROLE="${2:?--role требует значение}"; shift 2 ;;
     --agent)    AGENT="${2:?--agent требует значение}"; shift 2 ;;
     --lab-root) LAB_ROOT="${2:?--lab-root требует значение}"; shift 2 ;;
     --force)    FORCE=1; shift ;;
@@ -41,7 +45,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-TEMPLATE="${SCRIPT_DIR}/../examples/nomado-workspace"
+
+case "$ROLE" in
+  market)  TEMPLATE="${SCRIPT_DIR}/../examples/nomado-workspace" ;;
+  content) TEMPLATE="${SCRIPT_DIR}/../examples/nomado-content-workspace" ;;
+  *) echo "неизвестная роль: $ROLE (ожидается market или content)" >&2; exit 2 ;;
+esac
+
+: "${AGENT:=nomado-${ROLE}}"
 
 if [[ ! -d "$TEMPLATE" ]]; then
   echo "шаблон не найден: $TEMPLATE" >&2
@@ -71,7 +82,8 @@ install_file() {
   echo "  + ${dst#"$HOME"/}"
 }
 
-echo "Номадо · workspace агента маркетплейсов"
+echo "Номадо · workspace агента"
+echo "  роль:      ${ROLE}"
 echo "  агент:     ${AGENT}"
 echo "  workspace: ${WORKSPACE}"
 (( DRY_RUN )) && echo "  режим:     dry-run, изменений не будет"
@@ -90,11 +102,11 @@ run chmod 700 "$SECRETS_DIR"
 
 echo
 echo "Файлы workspace:"
-install_file "${TEMPLATE}/CLAUDE.md"                 "${WORKSPACE}/CLAUDE.md"
-install_file "${TEMPLATE}/core/unit-economics.md"    "${WORKSPACE}/core/unit-economics.md"
-install_file "${TEMPLATE}/core/assortment.md"        "${WORKSPACE}/core/assortment.md"
-install_file "${TEMPLATE}/core/suppliers.md"         "${WORKSPACE}/core/suppliers.md"
-install_file "${TEMPLATE}/core/hot/recent.md"        "${WORKSPACE}/core/hot/recent.md"
+# Обходим шаблон целиком: добавленный в него файл подхватится без правки скрипта.
+# channel.env.example исключён — он уезжает в secrets/, не в workspace.
+while IFS= read -r rel; do
+  install_file "${TEMPLATE}/${rel}" "${WORKSPACE}/${rel}"
+done < <(cd "$TEMPLATE" && find . -type f ! -name 'channel.env.example' -printf '%P\n' | sort)
 
 echo
 echo "Секреты:"
