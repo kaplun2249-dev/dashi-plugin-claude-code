@@ -70,6 +70,90 @@ def cell_to_text(value) -> str:
     return str(value)
 
 
+
+# --- Профиль «По дням» -------------------------------------------------------
+# Заголовки Bider содержат эмодзи со скин-тонами и вариационными селекторами,
+# поэтому лист опознаётся по устойчивым словам, а колонки маппятся по позиции.
+DAILY_MARKERS = ("Переходы", "Ср. цена", "Сум. заказы")
+
+DAILY_COLUMNS = [
+    "date", "visits", "cart_cr_pct", "carts", "order_cr_pct", "orders",
+    "buyout_pct", "bought", "in_transit", "cancelled", "avg_price",
+    "orders_sum", "drr", "ad_impressions", "ad_ctr_pct", "ad_clicks",
+    "ad_cpc", "ad_cpm", "ad_spend", "ad_cart_cr_pct", "ad_carts",
+    "ad_carts_related", "ad_orders", "ad_orders_related",
+]
+
+# Пробелы бывают неразрывные и тонкие; «~?~» Bider ставит там, где значение
+# ещё не определено (заказ не доехал) — это не ноль, это отсутствие данных.
+_SPACES = "\u00a0\u2009\u202f\u2007 "
+UNKNOWN_MARKERS = {"~?~", "?", "-", "—", ""}
+
+
+def is_daily_sheet(headers: list[str]) -> bool:
+    joined = " ".join(headers)
+    return headers and headers[0].strip().lower().startswith("день") \
+        and all(m in joined for m in DAILY_MARKERS)
+
+
+def parse_number(raw: str):
+    """'4 900 ₽' → 4900.0, '  6  %' → 6.0, '~?~' → None."""
+    if raw is None:
+        return None
+    t = str(raw).strip()
+    if t in UNKNOWN_MARKERS:
+        return None
+    for ch in _SPACES:
+        t = t.replace(ch, "")
+    t = t.replace("₽", "").replace("%", "").replace(",", ".")
+    if not t:
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def parse_date(raw: str) -> str:
+    t = str(raw).strip()[:10]
+    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d.%m.%y"):
+        try:
+            return dt.datetime.strptime(t, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return t
+
+
+def normalize_daily(headers: list[str], data: list[list]) -> tuple[list[str], list[list]]:
+    """Приводит лист «По дням» к каноническим колонкам и числам.
+
+    Колонок в выгрузке может быть больше или меньше ожидаемого — берём столько,
+    сколько есть, лишние складываем в extra_N, чтобы ничего не потерять.
+    """
+    width = max((len(r) for r in data), default=len(headers))
+    names = list(DAILY_COLUMNS[:width])
+    names += [f"extra_{i}" for i in range(len(names) + 1, width + 1)]
+
+    out = []
+    for row in data:
+        cells = list(row) + [None] * (width - len(row))
+        rec = {"date": parse_date(cell_to_text(cells[0]))}
+        for idx in range(1, width):
+            rec[names[idx]] = parse_number(cell_to_text(cells[idx]))
+        # Сквозная конверсия и выручка на переход — то, чего в выгрузке нет,
+        # а именно по ним видно, что происходит с карточкой.
+        visits = rec.get("visits") or 0
+        rec["visit_to_order_pct"] = round(rec["orders"] / visits * 100, 2) \
+            if visits and rec.get("orders") is not None else None
+        rec["revenue_per_visit"] = round(rec["orders_sum"] / visits, 2) \
+            if visits and rec.get("orders_sum") is not None else None
+        out.append(rec)
+
+    cols = names + ["visit_to_order_pct", "revenue_per_visit"]
+    rows = [[rec.get(c) for c in cols] for rec in out]
+    return cols, rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Разбор выгрузок Bider в CSV")
     ap.add_argument("--input", required=True, type=Path, help="файл .xlsx из Bider")
@@ -133,6 +217,17 @@ def main() -> int:
                 w.writerow([cell_to_text(c) for c in r])
         print(f"      → {dst.name}")
         written.append((ws.title, dst, len(data)))
+
+        # Сырой CSV остаётся как есть; нормализованный — то, что читает агент.
+        if is_daily_sheet(headers):
+            cols, rows = normalize_daily(headers, data)
+            norm = dst.with_name(dst.stem + "-normalized.csv")
+            with norm.open("w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                w.writerow(cols)
+                w.writerows(rows)
+            print(f"      → {norm.name} (профиль «По дням»)")
+            written.append((f"{ws.title} (нормализованный)", norm, len(rows)))
 
     if args.inspect:
         print("\nЕсли строка заголовков определена неверно — передайте --header-row N.")
